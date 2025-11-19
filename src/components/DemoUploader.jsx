@@ -5,6 +5,9 @@ const StepBadge = ({ label, active, done }) => (
 )
 
 const MAX_DURATION_SECONDS = 5 * 60 // 5 minutes
+const DEFAULT_CHUNK_SIZE = 10 * 1024 * 1024 // 10MB
+const MAX_RETRIES = 3
+const UPLOAD_TIMEOUT_MS = 90_000
 
 const DemoUploader = () => {
   const [file, setFile] = useState(null)
@@ -15,6 +18,8 @@ const DemoUploader = () => {
   const [loading, setLoading] = useState(false)
   const [jobs, setJobs] = useState([])
   const [durationInfo, setDurationInfo] = useState('')
+  const [progress, setProgress] = useState(0)
+  const [useChunked, setUseChunked] = useState(true)
   const BACKEND = (import.meta.env.VITE_BACKEND_URL || '').replace(/\/$/, '')
   const evtRef = useRef(null)
 
@@ -33,6 +38,7 @@ const DemoUploader = () => {
   const handleFileChange = (f) => {
     setError('')
     setDurationInfo('')
+    setProgress(0)
     if (!f) { setFile(null); return }
     try {
       const url = URL.createObjectURL(f)
@@ -64,6 +70,89 @@ const DemoUploader = () => {
     }
   }
 
+  const uploadWithProgress = async () => {
+    // Choose chunked path for files > DEFAULT_CHUNK_SIZE
+    if (!file) return
+    if (!BACKEND) throw new Error('Backend URL is not set')
+
+    if (!useChunked || file.size <= DEFAULT_CHUNK_SIZE) {
+      // Simple form upload with progress simulation using fetch streaming not supported; provide quick fake progress
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
+      try {
+        setProgress(5)
+        const form = new FormData()
+        form.append('file', file)
+        if (email) form.append('email', email)
+        const res = await fetch(`${BACKEND}/api/upload`, { method: 'POST', body: form, signal: controller.signal })
+        const data = await res.json().catch(()=>({}))
+        if (!res.ok) throw new Error(data.detail || 'Upload failed')
+        setProgress(100)
+        return data
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+
+    // Chunked flow
+    const chunkSize = DEFAULT_CHUNK_SIZE
+    const totalParts = Math.ceil(file.size / chunkSize)
+
+    // 1) init
+    const initForm = new FormData()
+    initForm.append('filename', file.name)
+    initForm.append('size_bytes', String(file.size))
+    initForm.append('chunk_size', String(chunkSize))
+    initForm.append('total_parts', String(totalParts))
+    if (email) initForm.append('email', email)
+
+    const initRes = await fetch(`${BACKEND}/api/upload/init`, { method: 'POST', body: initForm })
+    const initData = await initRes.json().catch(()=>({}))
+    if (!initRes.ok) throw new Error(initData.detail || 'Failed to initiate upload')
+    const uploadId = initData.upload_id
+
+    // 2) upload parts sequentially with retries
+    let uploaded = 0
+    for (let part = 1; part <= totalParts; part++) {
+      const start = (part - 1) * chunkSize
+      const end = Math.min(start + chunkSize, file.size)
+      const blob = file.slice(start, end)
+
+      let attempt = 0
+      while (true) {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
+        try {
+          const form = new FormData()
+          form.append('upload_id', uploadId)
+          form.append('part_number', String(part))
+          form.append('chunk', new File([blob], `${file.name}.part.${part}`))
+          const res = await fetch(`${BACKEND}/api/upload/part`, { method: 'POST', body: form, signal: controller.signal })
+          const data = await res.json().catch(()=>({}))
+          if (!res.ok) throw new Error(data.detail || 'Chunk upload failed')
+          uploaded += blob.size
+          setProgress(Math.floor((uploaded / file.size) * 100))
+          break
+        } catch (err) {
+          attempt++
+          if (attempt >= MAX_RETRIES) throw err
+          await new Promise(r => setTimeout(r, 1000 * attempt))
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+    }
+
+    // 3) complete
+    const completeForm = new FormData()
+    completeForm.append('upload_id', uploadId)
+    const completeRes = await fetch(`${BACKEND}/api/upload/complete`, { method: 'POST', body: completeForm })
+    const completeData = await completeRes.json().catch(()=>({}))
+    if (!completeRes.ok) throw new Error(completeData.detail || 'Failed to finalize upload')
+    setProgress(100)
+    return completeData
+  }
+
   const onUpload = async (e) => {
     e.preventDefault()
     if (!file) return
@@ -74,13 +163,7 @@ const DemoUploader = () => {
     setError('')
     setLoading(true)
     try {
-      const form = new FormData()
-      form.append('file', file)
-      if (email) form.append('email', email)
-      const res = await fetch(`${BACKEND}/api/upload`, { method: 'POST', body: form })
-      let data
-      try { data = await res.json() } catch { data = {} }
-      if (!res.ok) throw new Error(data.detail || 'Upload failed')
+      const data = await uploadWithProgress()
       if (!data.job_id) throw new Error('No job id returned from server')
       setJobId(data.job_id)
       setJob({ status: 'queued', progress: 0, current_step: 'analyze_content', steps: ["analyze_content","detect_cuts","auto_captions","select_music","insert_b_roll","color_and_export"] })
@@ -172,6 +255,15 @@ const DemoUploader = () => {
                   {loading ? 'Uploading…' : 'Upload & Process'}
                 </button>
                 {job?.status && <span className="text-sm text-white/70">{job.status} • {job.progress || 0}%</span>}
+              </div>
+              {!!progress && loading && (
+                <div className="mt-2 h-2 w-full rounded bg-white/10 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-teal-400 to-purple-500 transition-all" style={{ width: `${progress}%` }} />
+                </div>
+              )}
+              <div className="flex items-center gap-2 text-xs text-white/60">
+                <input id="chunked" type="checkbox" checked={useChunked} onChange={(e)=>setUseChunked(e.target.checked)} />
+                <label htmlFor="chunked">Use chunked upload with resume</label>
               </div>
             </form>
             {error && <p className="mt-3 text-red-300 text-sm">{error}</p>}

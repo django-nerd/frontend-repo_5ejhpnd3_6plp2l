@@ -10,43 +10,61 @@ const DemoUploader = () => {
   const [jobId, setJobId] = useState(null)
   const [job, setJob] = useState(null)
   const [error, setError] = useState('')
-  const BACKEND = import.meta.env.VITE_BACKEND_URL || ''
+  const [loading, setLoading] = useState(false)
+  const BACKEND = (import.meta.env.VITE_BACKEND_URL || '').replace(/\/$/, '')
 
   const onUpload = async (e) => {
     e.preventDefault()
     if (!file) return
+    if (!BACKEND) {
+      setError('Backend URL is not set. Please set VITE_BACKEND_URL in your environment.')
+      return
+    }
     setError('')
+    setLoading(true)
     try {
       const form = new FormData()
       form.append('file', file)
       if (email) form.append('email', email)
       const res = await fetch(`${BACKEND}/api/upload`, { method: 'POST', body: form })
-      const data = await res.json()
+      let data
+      try { data = await res.json() } catch { data = {} }
       if (!res.ok) throw new Error(data.detail || 'Upload failed')
+      if (!data.job_id) throw new Error('No job id returned from server')
       setJobId(data.job_id)
+      setJob({ status: 'queued', progress: 0, current_step: 'analyze_content', steps: ["analyze_content","detect_cuts","auto_captions","select_music","insert_b_roll","color_and_export"] })
     } catch (err) {
-      setError(err.message)
+      setError(err.message || 'Something went wrong')
+    } finally {
+      setLoading(false)
     }
   }
 
   useEffect(() => {
-    if (!jobId) return
+    if (!jobId || !BACKEND) return
     const iv = setInterval(async () => {
       try {
         const res = await fetch(`${BACKEND}/api/jobs/${jobId}`)
         const data = await res.json()
         if (res.ok) setJob(data)
         if (data.status === 'completed' || data.status === 'failed') clearInterval(iv)
-      } catch (e) {}
+      } catch (e) {
+        // swallow polling errors briefly
+      }
     }, 800)
     return () => clearInterval(iv)
-  }, [jobId])
+  }, [jobId, BACKEND])
 
   const steps = job?.steps || ["analyze_content","detect_cuts","auto_captions","select_music","insert_b_roll","color_and_export"]
 
   return (
     <section className="relative py-24 bg-[#0A1E42]">
       <div className="relative max-w-7xl mx-auto px-6 sm:px-8">
+        {!BACKEND && (
+          <div className="mb-6 p-4 rounded-xl border border-yellow-400/30 bg-yellow-500/10 text-yellow-200 text-sm">
+            Missing backend URL. Set VITE_BACKEND_URL to your API base (e.g. https://your-backend-url) and reload.
+          </div>
+        )}
         <div className="grid lg:grid-cols-2 gap-10 items-start">
           <div>
             <h3 className="text-2xl font-semibold text-white">Try a real upload</h3>
@@ -54,7 +72,9 @@ const DemoUploader = () => {
             <form onSubmit={onUpload} className="mt-6 space-y-3">
               <input type="email" placeholder="Email (optional, for updates)" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full rounded-xl bg-black/30 border border-white/10 px-4 py-3 outline-none text-white placeholder:text-white/50" />
               <input type="file" accept="video/*" onChange={(e)=>setFile(e.target.files?.[0] || null)} className="w-full text-sm text-white/80" />
-              <button className="px-5 py-3 rounded-xl bg-gradient-to-r from-teal-400 to-purple-500 text-slate-900 font-semibold disabled:opacity-60" disabled={!file}>Upload & Process</button>
+              <button type="submit" className="px-5 py-3 rounded-xl bg-gradient-to-r from-teal-400 to-purple-500 text-slate-900 font-semibold disabled:opacity-60" disabled={!file || loading}>
+                {loading ? 'Uploading…' : 'Upload & Process'}
+              </button>
             </form>
             {error && <p className="mt-3 text-red-300 text-sm">{error}</p>}
             {jobId && (

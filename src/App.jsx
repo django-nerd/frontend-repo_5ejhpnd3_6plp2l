@@ -5,6 +5,8 @@ import Features from './components/Features'
 import Showcase from './components/Showcase'
 import Pricing from './components/Pricing'
 import Testimonials from './components/Testimonials'
+import SignupCTA from './components/SignupCTA'
+import DemoUploader from './components/DemoUploader'
 import Footer from './components/Footer'
 
 function App() {
@@ -14,7 +16,9 @@ function App() {
       <HowItWorks />
       <Features />
       <Showcase />
+      <DemoUploader />
       <Pricing />
+      <SignupCTA />
       <Testimonials />
       <Footer />
     </div>

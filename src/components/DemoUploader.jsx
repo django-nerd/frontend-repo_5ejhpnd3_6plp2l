@@ -1,0 +1,98 @@
+import React, { useState, useEffect } from 'react'
+
+const StepBadge = ({ label, active, done }) => (
+  <div className={`px-2 py-1 rounded text-xs font-medium border ${active ? 'border-teal-300 text-teal-300' : done ? 'border-white/20 text-white/60' : 'border-white/10 text-white/40'}`}>{label}</div>
+)
+
+const DemoUploader = () => {
+  const [file, setFile] = useState(null)
+  const [email, setEmail] = useState('')
+  const [jobId, setJobId] = useState(null)
+  const [job, setJob] = useState(null)
+  const [error, setError] = useState('')
+  const BACKEND = import.meta.env.VITE_BACKEND_URL || ''
+
+  const onUpload = async (e) => {
+    e.preventDefault()
+    if (!file) return
+    setError('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      if (email) form.append('email', email)
+      const res = await fetch(`${BACKEND}/api/upload`, { method: 'POST', body: form })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Upload failed')
+      setJobId(data.job_id)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  useEffect(() => {
+    if (!jobId) return
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND}/api/jobs/${jobId}`)
+        const data = await res.json()
+        if (res.ok) setJob(data)
+        if (data.status === 'completed' || data.status === 'failed') clearInterval(iv)
+      } catch (e) {}
+    }, 800)
+    return () => clearInterval(iv)
+  }, [jobId])
+
+  const steps = job?.steps || ["analyze_content","detect_cuts","auto_captions","select_music","insert_b_roll","color_and_export"]
+
+  return (
+    <section className="relative py-24 bg-[#0A1E42]">
+      <div className="relative max-w-7xl mx-auto px-6 sm:px-8">
+        <div className="grid lg:grid-cols-2 gap-10 items-start">
+          <div>
+            <h3 className="text-2xl font-semibold text-white">Try a real upload</h3>
+            <p className="mt-2 text-slate-300/90">Upload a short clip and watch the AI pipeline run in real time — analysis, captions, music selection, b‑roll, and export.</p>
+            <form onSubmit={onUpload} className="mt-6 space-y-3">
+              <input type="email" placeholder="Email (optional, for updates)" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full rounded-xl bg-black/30 border border-white/10 px-4 py-3 outline-none text-white placeholder:text-white/50" />
+              <input type="file" accept="video/*" onChange={(e)=>setFile(e.target.files?.[0] || null)} className="w-full text-sm text-white/80" />
+              <button className="px-5 py-3 rounded-xl bg-gradient-to-r from-teal-400 to-purple-500 text-slate-900 font-semibold disabled:opacity-60" disabled={!file}>Upload & Process</button>
+            </form>
+            {error && <p className="mt-3 text-red-300 text-sm">{error}</p>}
+            {jobId && (
+              <div className="mt-6 p-4 rounded-xl border border-white/10 bg-white/5">
+                <div className="text-sm text-white/80">Job: {jobId}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {steps.map((s)=>{
+                    const active = job?.current_step === s && job?.status !== 'completed'
+                    const done = job && steps.indexOf(s) <= steps.indexOf(job.current_step || steps[0]) && job.status !== 'failed'
+                    return <StepBadge key={s} label={s.replaceAll('_',' ')} active={active} done={done} />
+                  })}
+                </div>
+                <div className="mt-3 h-2 w-full rounded bg-white/10 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-teal-400 to-purple-500" style={{ width: `${job?.progress || 0}%` }} />
+                </div>
+                <div className="mt-2 text-xs text-white/70">{job?.status} • {job?.progress || 0}%</div>
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="rounded-2xl overflow-hidden border border-white/10 bg-white/5">
+              <div className="aspect-video">
+                {job?.status === 'completed' ? (
+                  <video controls className="w-full h-full object-cover" src={`${BACKEND}${job?.render_url}`}></video>
+                ) : (
+                  <img src="https://images.unsplash.com/photo-1512428559087-560fa5ceab42?q=80&w=1600&auto=format&fit=crop" className="w-full h-full object-cover opacity-90" />
+                )}
+              </div>
+              <div className="p-4 flex items-center justify-between">
+                <div className="px-3 py-1 rounded bg-black/40 text-white/80 text-sm">{job?.status ? job.status : 'Waiting for upload'}</div>
+                {job?.status === 'completed' && <a href={`${BACKEND}${job?.render_url}`} target="_blank" className="px-4 py-2 rounded bg-white text-slate-900 font-medium">Open render</a>}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+export default DemoUploader

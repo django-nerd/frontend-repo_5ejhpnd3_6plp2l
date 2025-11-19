@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 
 const StepBadge = ({ label, active, done }) => (
   <div className={`px-2 py-1 rounded text-xs font-medium border ${active ? 'border-teal-300 text-teal-300' : done ? 'border-white/20 text-white/60' : 'border-white/10 text-white/40'}`}>{label}</div>
@@ -11,7 +11,20 @@ const DemoUploader = () => {
   const [job, setJob] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [jobs, setJobs] = useState([])
   const BACKEND = (import.meta.env.VITE_BACKEND_URL || '').replace(/\/$/, '')
+  const evtRef = useRef(null)
+
+  const fetchJobs = async () => {
+    if (!BACKEND) return
+    try {
+      const res = await fetch(`${BACKEND}/api/jobs?limit=10`)
+      if (res.ok) {
+        const data = await res.json()
+        setJobs(Array.isArray(data) ? data : [])
+      }
+    } catch {}
+  }
 
   const onUpload = async (e) => {
     e.preventDefault()
@@ -40,20 +53,63 @@ const DemoUploader = () => {
     }
   }
 
+  // Prefer SSE for live updates; fall back to polling if not available
   useEffect(() => {
     if (!jobId || !BACKEND) return
-    const iv = setInterval(async () => {
-      try {
-        const res = await fetch(`${BACKEND}/api/jobs/${jobId}`)
-        const data = await res.json()
-        if (res.ok) setJob(data)
-        if (data.status === 'completed' || data.status === 'failed') clearInterval(iv)
-      } catch (e) {
-        // swallow polling errors briefly
+
+    // Clean previous source
+    if (evtRef.current) {
+      evtRef.current.close()
+      evtRef.current = null
+    }
+
+    let stopped = false
+
+    try {
+      const src = new EventSource(`${BACKEND}/api/jobs/${jobId}/events`)
+      evtRef.current = src
+      src.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data)
+          setJob((prev) => ({ ...(prev || {}), ...data }))
+          if (data.status === 'completed' || data.status === 'failed') {
+            src.close()
+          }
+        } catch {}
       }
-    }, 800)
-    return () => clearInterval(iv)
+      src.onerror = () => {
+        // Fallback to polling
+        src.close()
+        evtRef.current = null
+        startPolling()
+      }
+    } catch {
+      startPolling()
+    }
+
+    function startPolling(){
+      const iv = setInterval(async () => {
+        if (stopped) { clearInterval(iv); return }
+        try {
+          const res = await fetch(`${BACKEND}/api/jobs/${jobId}`)
+          const data = await res.json()
+          if (res.ok) setJob(data)
+          if (data.status === 'completed' || data.status === 'failed') clearInterval(iv)
+        } catch {}
+      }, 900)
+      return () => clearInterval(iv)
+    }
+
+    return () => {
+      stopped = true
+      if (evtRef.current) {
+        evtRef.current.close()
+        evtRef.current = null
+      }
+    }
   }, [jobId, BACKEND])
+
+  useEffect(() => { fetchJobs() }, [BACKEND, jobId])
 
   const steps = job?.steps || ["analyze_content","detect_cuts","auto_captions","select_music","insert_b_roll","color_and_export"]
 
@@ -65,16 +121,19 @@ const DemoUploader = () => {
             Missing backend URL. Set VITE_BACKEND_URL to your API base (e.g. https://your-backend-url) and reload.
           </div>
         )}
-        <div className="grid lg:grid-cols-2 gap-10 items-start">
-          <div>
+        <div className="grid lg:grid-cols-3 gap-10 items-start">
+          <div className="lg:col-span-2">
             <h3 className="text-2xl font-semibold text-white">Try a real upload</h3>
             <p className="mt-2 text-slate-300/90">Upload a short clip and watch the AI pipeline run in real time — analysis, captions, music selection, b‑roll, and export.</p>
             <form onSubmit={onUpload} className="mt-6 space-y-3">
               <input type="email" placeholder="Email (optional, for updates)" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full rounded-xl bg-black/30 border border-white/10 px-4 py-3 outline-none text-white placeholder:text-white/50" />
               <input type="file" accept="video/*" onChange={(e)=>setFile(e.target.files?.[0] || null)} className="w-full text-sm text-white/80" />
-              <button type="submit" className="px-5 py-3 rounded-xl bg-gradient-to-r from-teal-400 to-purple-500 text-slate-900 font-semibold disabled:opacity-60" disabled={!file || loading}>
-                {loading ? 'Uploading…' : 'Upload & Process'}
-              </button>
+              <div className="flex items-center gap-3">
+                <button type="submit" className="px-5 py-3 rounded-xl bg-gradient-to-r from-teal-400 to-purple-500 text-slate-900 font-semibold disabled:opacity-60" disabled={!file || loading}>
+                  {loading ? 'Uploading…' : 'Upload & Process'}
+                </button>
+                {job?.status && <span className="text-sm text-white/70">{job.status} • {job.progress || 0}%</span>}
+              </div>
             </form>
             {error && <p className="mt-3 text-red-300 text-sm">{error}</p>}
             {jobId && (
@@ -90,12 +149,9 @@ const DemoUploader = () => {
                 <div className="mt-3 h-2 w-full rounded bg-white/10 overflow-hidden">
                   <div className="h-full bg-gradient-to-r from-teal-400 to-purple-500" style={{ width: `${job?.progress || 0}%` }} />
                 </div>
-                <div className="mt-2 text-xs text-white/70">{job?.status} • {job?.progress || 0}%</div>
               </div>
             )}
-          </div>
-          <div>
-            <div className="rounded-2xl overflow-hidden border border-white/10 bg-white/5">
+            <div className="mt-6 rounded-2xl overflow-hidden border border-white/10 bg-white/5">
               <div className="aspect-video">
                 {job?.status === 'completed' ? (
                   <video controls className="w-full h-full object-cover" src={`${BACKEND}${job?.render_url}`}></video>
@@ -103,9 +159,28 @@ const DemoUploader = () => {
                   <img src="https://images.unsplash.com/photo-1512428559087-560fa5ceab42?q=80&w=1600&auto=format&fit=crop" className="w-full h-full object-cover opacity-90" />
                 )}
               </div>
-              <div className="p-4 flex items-center justify-between">
-                <div className="px-3 py-1 rounded bg-black/40 text-white/80 text-sm">{job?.status ? job.status : 'Waiting for upload'}</div>
-                {job?.status === 'completed' && <a href={`${BACKEND}${job?.render_url}`} target="_blank" className="px-4 py-2 rounded bg-white text-slate-900 font-medium">Open render</a>}
+              {job?.status === 'completed' && (
+                <div className="p-4 flex items-center justify-between">
+                  <div className="px-3 py-1 rounded bg-black/40 text-white/80 text-sm">Ready</div>
+                  <a href={`${BACKEND}${job?.render_url}`} download className="px-4 py-2 rounded bg-white text-slate-900 font-medium">Download</a>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="lg:col-span-1">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-white font-semibold">Recent renders</h4>
+                <button onClick={fetchJobs} className="text-xs text-white/70 hover:text-white">Refresh</button>
+              </div>
+              <div className="mt-3 space-y-2 max-h-[360px] overflow-auto pr-1">
+                {jobs.length === 0 && <div className="text-white/60 text-sm">No jobs yet.</div>}
+                {jobs.map((j) => (
+                  <button key={j.job_id || j.filename} onClick={() => { setJobId(j.job_id); setJob(j); }} className={`w-full text-left p-3 rounded-lg border border-white/10 hover:border-white/20 bg-black/20`}>
+                    <div className="text-xs text-white/60 truncate">{j.filename}</div>
+                    <div className="text-sm text-white/90">{j.status} • {j.progress || 0}%</div>
+                  </button>
+                ))}
               </div>
             </div>
           </div>

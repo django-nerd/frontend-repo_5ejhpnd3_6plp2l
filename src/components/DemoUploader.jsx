@@ -4,6 +4,8 @@ const StepBadge = ({ label, active, done }) => (
   <div className={`px-2 py-1 rounded text-xs font-medium border ${active ? 'border-teal-300 text-teal-300' : done ? 'border-white/20 text-white/60' : 'border-white/10 text-white/40'}`}>{label}</div>
 )
 
+const MAX_DURATION_SECONDS = 5 * 60 // 5 minutes
+
 const DemoUploader = () => {
   const [file, setFile] = useState(null)
   const [email, setEmail] = useState('')
@@ -12,6 +14,7 @@ const DemoUploader = () => {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [jobs, setJobs] = useState([])
+  const [durationInfo, setDurationInfo] = useState('')
   const BACKEND = (import.meta.env.VITE_BACKEND_URL || '').replace(/\/$/, '')
   const evtRef = useRef(null)
 
@@ -24,6 +27,41 @@ const DemoUploader = () => {
         setJobs(Array.isArray(data) ? data : [])
       }
     } catch {}
+  }
+
+  // Validate duration client-side (max 5 minutes)
+  const handleFileChange = (f) => {
+    setError('')
+    setDurationInfo('')
+    if (!f) { setFile(null); return }
+    try {
+      const url = URL.createObjectURL(f)
+      const v = document.createElement('video')
+      v.preload = 'metadata'
+      v.onloadedmetadata = () => {
+        URL.revokeObjectURL(url)
+        const dur = v.duration || 0
+        if (isFinite(dur) && dur > MAX_DURATION_SECONDS) {
+          setError('Please select a clip up to 5 minutes long.')
+          setFile(null)
+          setDurationInfo('')
+        } else {
+          const minutes = Math.floor(dur / 60)
+          const seconds = Math.round(dur % 60)
+          setDurationInfo(dur ? `Duration: ${minutes}:${seconds.toString().padStart(2,'0')}` : '')
+          setFile(f)
+        }
+      }
+      v.onerror = () => {
+        URL.revokeObjectURL(url)
+        // If duration can't be read, allow upload but show a hint
+        setDurationInfo('')
+        setFile(f)
+      }
+      v.src = url
+    } catch {
+      setFile(f)
+    }
   }
 
   const onUpload = async (e) => {
@@ -124,10 +162,11 @@ const DemoUploader = () => {
         <div className="grid lg:grid-cols-3 gap-10 items-start">
           <div className="lg:col-span-2">
             <h3 className="text-2xl font-semibold text-white">Try a real upload</h3>
-            <p className="mt-2 text-slate-300/90">Upload a short clip and watch the AI pipeline run in real time — analysis, captions, music selection, b‑roll, and export.</p>
+            <p className="mt-2 text-slate-300/90">Upload a short clip (up to 5 minutes, ~500MB) and watch the AI pipeline run in real time — analysis, captions, music selection, b‑roll, and export.</p>
             <form onSubmit={onUpload} className="mt-6 space-y-3">
               <input type="email" placeholder="Email (optional, for updates)" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full rounded-xl bg-black/30 border border-white/10 px-4 py-3 outline-none text-white placeholder:text-white/50" />
-              <input type="file" accept="video/*" onChange={(e)=>setFile(e.target.files?.[0] || null)} className="w-full text-sm text-white/80" />
+              <input type="file" accept="video/*" onChange={(e)=>handleFileChange(e.target.files?.[0] || null)} className="w-full text-sm text-white/80" />
+              {durationInfo && <div className="text-xs text-white/60">{durationInfo}</div>}
               <div className="flex items-center gap-3">
                 <button type="submit" className="px-5 py-3 rounded-xl bg-gradient-to-r from-teal-400 to-purple-500 text-slate-900 font-semibold disabled:opacity-60" disabled={!file || loading}>
                   {loading ? 'Uploading…' : 'Upload & Process'}
@@ -162,7 +201,7 @@ const DemoUploader = () => {
               {job?.status === 'completed' && (
                 <div className="p-4 flex items-center justify-between">
                   <div className="px-3 py-1 rounded bg-black/40 text-white/80 text-sm">Ready</div>
-                  <a href={`${BACKEND}${job?.render_url}`} download className="px-4 py-2 rounded bg-white text-slate-900 font-medium">Download</a>
+                  <a href={`${BACKEND}${job?.render_url}?download=1`} download className="px-4 py-2 rounded bg-white text-slate-900 font-medium">Download</a>
                 </div>
               )}
             </div>
